@@ -1,11 +1,11 @@
 //===--- mpmc_bounded_queue.h - Geant-V -------------------------*- C++ -*-===//
 //
-//                     Geant-V Prototype               
+//                     Geant-V Prototype
 //
 //===----------------------------------------------------------------------===//
 /**
  * @file mpmc_bounded_queue.h
- * @brief Implementation of MPMC bounded queue for Geant-V prototype 
+ * @brief Implementation of MPMC bounded queue for Geant-V prototype
  * @author Andrei Gheata
  * based on http://www.1024cores.net/home/lock-free-algorithms/queues/bounded-mpmc-queue
  */
@@ -15,12 +15,13 @@
 #define GEANT_MPMC_BOUNDED_QUEUE
 #include <atomic>
 #include <cassert>
+#include <stdio.h>
 
 typedef std::size_t size_t;
 
 /**
  * @brief Class MPMC bounded queue
- * 
+ *
  * @param buffer_size Buffer size for queue
  * @tparam T Type of objects
  */
@@ -29,7 +30,7 @@ public:
 
   /**
    * @brief MPMC bounded queue constructor
-   * 
+   *
    * @param buffer_size Buffer size for queue
    */
   mpmc_bounded_queue(size_t buffer_size)
@@ -45,13 +46,13 @@ public:
 
   /** @brief MPMC bounded queue destructor */
   ~mpmc_bounded_queue() { delete[] buffer_; }
-  
+
   /** @brief Size function */
   size_t size() const { return nstored_.load(std::memory_order_relaxed); }
-  
+
   /**
    * @brief MPMC enqueue function
-   * 
+   *
    * @param data Data to be enqueued
    */
   bool enqueue(T const &data) {
@@ -74,10 +75,10 @@ public:
     cell->sequence_.store(pos + 1, std::memory_order_release);
     return true;
   }
-  
+
   /**
    * @brief MPMC dequeue function
-   * 
+   *
    * @param data Data to be dequeued
    */
   bool dequeue(T &data) {
@@ -110,8 +111,8 @@ private:
 
     /**
      * @brief Cell constructor
-     * 
-     * @param sequence_(0) Sequence 
+     *
+     * @param sequence_(0) Sequence
      * @param data_() Data
      */
     cell_t() : sequence_(0), data_() {}
@@ -129,7 +130,7 @@ private:
   cacheline_pad_t pad3_;
   std::atomic<size_t> nstored_;
   cacheline_pad_t pad4_;
-  
+
   /** @brief MPMC bounded queue copy constructor */
   mpmc_bounded_queue(mpmc_bounded_queue const &);
 

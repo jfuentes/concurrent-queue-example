@@ -15,10 +15,6 @@ namespace GeantEx {
   std::atomic<size_t> current_id;
   //global checksum
   std::atomic<size_t> global_checksum;
-  //best average so far
-  std::atomic<float> best_average;
-  //id best record so far
-  std::atomic<size_t> best_id;
   // total number of records
   size_t num_records;
 
@@ -44,16 +40,16 @@ namespace GeantEx {
     //
     size_t temp;
     while(1) {
-         temp=current_id.load(std::memory_order_relaxed);
-         if (current_id.compare_exchange_weak(temp, temp + 1, std::memory_order_relaxed))
+         temp=current_id.load(std::memory_order_acquire);
+         if (current_id.compare_exchange_weak(temp, temp + 1, std::memory_order_release))
             break;
    }
    rec.id_ = temp;
-   rec.math_ = rand()%11;
-   rec.phys_ = rand()%11;
-   rec.chem_ = rand()%11;
-   rec.comp_sc_ = rand()%11;
-   global_checksum.fetch_add(rec.id_);
+   rec.math_ = rand()%10+1;
+   rec.phys_ = rand()%10+1;
+   rec.chem_ = rand()%10+1;
+   rec.comp_sc_ = rand()%10+1;
+   global_checksum.fetch_add(rec.id_, std::memory_order_relaxed);
   }
 
   /** Processing of a record, to be called concurrently */
@@ -66,34 +62,36 @@ namespace GeantEx {
          average = (rec.math_ + rec.phys_ + rec.chem_ + rec.comp_sc_)/4;
     else
          average = 0;
-    global_checksum.fetch_add(rec.id_);
+    global_checksum.fetch_add(rec.id_, std::memory_order_relaxed);
   }
 
+  /** Process executed by each thread to generate records**/
+  void GenerateRecordThread(mpmc_bounded_queue<Record> &queue){
+     //Each thread generate records until the total number of records is reached
+     while(current_id.load(std::memory_order_relaxed) < num_records){
+           Record rec;
+           GenerateRecord(rec);
+           queue.enqueue(rec);
+     }
+  }
 
-int GenerateRecordThread(mpmc_bounded_queue<Record> &queue){
-   while(current_id.load(std::memory_order_relaxed) < num_records){
-         Record rec;
-         GenerateRecord(rec);
-         queue.enqueue(rec);
-   }
-   return 0;
-}
-
-int ProcessRecordThread(Record &result, mpmc_bounded_queue<Record> &queue){
-   float max_avg=0.0;
-   Record max_record;
-   Record rec;
-   while(queue.dequeue(rec)){
-         float temp;
-         ProcessRecord(rec, temp);
-         if(temp>max_avg){
-            max_record = rec;
-            temp = max_avg;
-         }
-   }
-   result = max_record;
-   return 0;
-}
+  /** Process executed by each thread to process records **/
+  void ProcessRecordThread(Record &result, size_t &avg, mpmc_bounded_queue<Record> &queue){
+     //Each thread looks at a subset of records and return the one with best average
+     float max_avg=0.0;
+     Record max_record;
+     Record rec;
+     while(queue.dequeue(rec)){ //while there are records to process
+           float temp;
+           ProcessRecord(rec, temp);
+           if(temp>max_avg){
+              max_record = rec;
+              max_avg = temp;
+           }
+     }
+     result = max_record;
+     avg = max_avg;
+  }
 
 } // GeantEx
 
@@ -134,28 +132,41 @@ int main(int argc, char *argv[]) {
   // ... Your code here
 
   size_t num_threads = atoi(argv[1]);
-
+  if(num_threads<1){
+    std::cout << "Error: number of threads must be grater than 0" << std::endl;
+    return 1;
+  }
+  num_records = nrecords;
 
   //create the queue of records, array of results and threads
-  mpmc_bounded_queue<Record> queue(nrecords);
-  Record results[num_threads];
+  mpmc_bounded_queue<Record> queue(1048576); //enough buffer for number of records (1000000)
+  Record results[num_threads]; //used for storing best records found by each thread
+  size_t avgs[num_threads]; // used for storing best average found by each thread
+  Record max_record; //final answer
+  float max_avg; //final answer
   std::thread *threads = new std::thread[num_threads];
+
+  //atomic variables that will be updated by threads
+  current_id.store(0, std::memory_order_relaxed);
+  global_checksum.store(0, std::memory_order_relaxed);
 
   //record generation step
   for(size_t i=0; i<num_threads; i++){
-     threads[i] = std::thread(GenerateRecordThread, queue);
+     threads[i] = std::move(std::thread(GenerateRecordThread, std::ref(queue)));
   }
 
   for(size_t i=0; i<num_threads; i++){
     threads[i].join();
   }
 
+  //std::cout << "elements inserted in queue: " << queue.size() << std::endl;
+
   checksum_ref = global_checksum.load(std::memory_order_relaxed);
   global_checksum.store(0, std::memory_order_relaxed);
 
   //record processing step
   for(size_t i=0; i<num_threads; i++){
-     threads[i] = std::thread(ProcessRecordThread, &results[i], queue);
+    threads[i] = std::move(std::thread(ProcessRecordThread, std::ref(results[i]), std::ref(avgs[i]), std::ref(queue)));
   }
 
   for(size_t i=0; i<num_threads; i++){
@@ -164,10 +175,23 @@ int main(int argc, char *argv[]) {
 
   checksum = global_checksum.load(std::memory_order_relaxed);
 
+  //find final result
+  max_avg = avgs[0];
+  max_record = results[0];
+  for(size_t i=1; i<num_threads; i++){
+    if(max_avg < avgs[i]){
+      max_avg = avgs[i];
+      max_record = results[i];
+    }
+  }
+
 
   double cpu1  = get_cpu_time();
   double rt1 = get_wall_time();
 
+  //std::cout << "elements in queue after processing: " << queue.size() << std::endl;
+
+  std::cout << "result: id " << max_record.id_ << " with best average " << max_avg << std::endl;
   std::cout << "run time: " << rt1-rt0 << "   cpu time: " << cpu1-cpu0
             << "  checksum: " << checksum << " ref: " << checksum_ref << std::endl;
   return 0;
